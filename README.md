@@ -9,7 +9,7 @@ Quantitative Investment and Trading Toolkit
     $ conda update conda
 
     # Create environment
-    $ conda create -n quant_kit_env -c conda-forge \
+    $ conda create -y -n quant_kit_env -c conda-forge \
         black \
         ipykernel \
         python=3.10 \
