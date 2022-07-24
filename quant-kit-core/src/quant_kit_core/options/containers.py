@@ -1,12 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, auto
-from typing import List, Union
-
-import numpy as np
-from numpy import ndarray
-from scipy.optimize import minimize
-from scipy.stats import norm
+from typing import Union
 
 
 __all__ = [

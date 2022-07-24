@@ -13,12 +13,12 @@ from quant_kit_core.options.containers import (
     Option,
     OptionReplicationResult,
 )
-from quant_kit_core.utils import get_timediff, sample_gbm_returns
+from quant_kit_core.utils import get_timediff
 
 
 __all__ = [
+    "get_implied_vol",
     "get_price_bsm",
-    "get_bsm_iv",
     "get_price_pcp",
     "get_price_statrep",
 ]
