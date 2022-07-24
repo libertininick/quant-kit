@@ -6,6 +6,11 @@ from datetime import datetime, timedelta
 from typing import List, Tuple, Union
 
 
+__all__ = [
+    "get_timediff",
+]
+
+
 def get_timediff(dt1: Union[datetime, str], dt2: Union[datetime, str]) -> float:
     """Calculates the total time difference between two dates, expressed as a
     fraction of a calendar year.
