@@ -6,6 +6,10 @@ jupyter:
       format_name: markdown
       format_version: '1.3'
       jupytext_version: 1.13.8
+  kernelspec:
+    display_name: Python [conda env:quant_kit_env]
+    language: python
+    name: conda-env-quant_kit_env-py
 ---
 
 ```python
@@ -38,11 +42,9 @@ mpl.rcParams['figure.facecolor'] = 'white'
 mpl.rcParams['axes.facecolor'] = 'white'
 ```
 
-<!-- #region heading_collapsed=true -->
 # Test pricing methods
-<!-- #endregion -->
 
-```python hidden=true
+```python
 strike = 100
 expiration_date = "2022-12-31"
 
@@ -51,7 +53,7 @@ call_option = Option(ContractType.CALL, strike, expiration_date)
 put_option = Option(ContractType.PUT, strike, expiration_date)
 ```
 
-```python hidden=true
+```python
 date = "2022-04-30"
 spot = 100
 volatility = 0.276
@@ -73,19 +75,19 @@ ax.hist(future_prices, bins=50, edgecolor="black", alpha=0.5)
 _ = ax.set_title("GBM Future price distribution")
 ```
 
-```python hidden=true
-call_price_bsm = get_bsm_price(call_option, date, spot, volatility, rf_rate, dvd_yld)
+```python
+call_price_bsm = get_price_bsm(call_option, date, spot, volatility, rf_rate, dvd_yld)
 
-put_price_bsm = get_bsm_price(put_option, date, spot, volatility, rf_rate, dvd_yld)
+put_price_bsm = get_price_bsm(put_option, date, spot, volatility, rf_rate, dvd_yld)
 
-call_price_pcp = get_pcp_price(
-    call_option, date, put_price_bsm, spot, rf_rate, dvd_yld
+call_price_pcp = get_price_pcp(
+    put_price_bsm, call_option, date, spot, rf_rate, dvd_yld
 )
 
 print(f"Call BSM: ${call_price_bsm:>10.6f}\nPut BSM : ${put_price_bsm:>10.6f}\nCall PCP: ${call_price_pcp:>10.6f}")
 ```
 
-```python hidden=true
+```python
 get_statrep_prices(
     returns=sample_gbm_returns(rf_rate, volatility, t, size=1000000),
     timediff=t,
@@ -96,7 +98,7 @@ get_statrep_prices(
 )
 ```
 
-```python hidden=true
+```python
 option = Option(
     type=ContractType.CALL,
     strike=100,
