@@ -30,7 +30,6 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import precision_recall_fscore_support
 from torch import Tensor
 
-from quant_kit_core import get_timediff
 from quant_kit_core.distributions import sample_gbm_returns
 from quant_kit_core.options import (
     ContractType, 
@@ -41,6 +40,7 @@ from quant_kit_core.options import (
     get_price_statrep
 )
 from quant_kit_core.time_series import get_robust_trend_coef
+from quant_kit_core.utils import get_timediff
 
 # Plotting style
 plt.style.use('seaborn-colorblind')

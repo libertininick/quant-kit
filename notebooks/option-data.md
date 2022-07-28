@@ -23,7 +23,7 @@ import psycopg as pg
 from pandas import DataFrame
 
 
-from quant_kit_core import get_timediff
+from quant_kit_core.utils import get_timediff
 
 # Plotting style
 plt.style.use('seaborn-colorblind')

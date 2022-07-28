@@ -21,7 +21,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from quant_kit_core import get_timediff
 from quant_kit_core.distributions import sample_gbm_returns
 from quant_kit_core.options import (
     ContractType, 
@@ -31,6 +30,7 @@ from quant_kit_core.options import (
     get_price_pcp,
     get_price_statrep
 )
+from quant_kit_core.utils import get_timediff
 
 
 # Plotting style

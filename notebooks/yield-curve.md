@@ -28,7 +28,7 @@ import torch.nn as nn
 from pandas import DataFrame
 from torch import Tensor
 
-from quant_kit_core import get_timediff
+from quant_kit_core.utils import get_timediff
 
 # Plotting style
 plt.style.use('seaborn-colorblind')
