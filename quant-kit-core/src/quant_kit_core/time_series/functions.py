@@ -8,39 +8,36 @@ __all__ = [
 ]
 
 
-def get_robust_trend_coef(x: ndarray, n_bins: int = 10) -> float:
+def get_robust_trend_coef(returns: ndarray) -> float:
     """Calculates the trend coefficient for a sequence of observations
 
     Parameters
     ----------
-    x: ndarray, shape=(N,)
-        Time series to calculate trend coefficient for.
-    n_bins: int, optional
-        Number of equal sized segments to break series into and reduce via median.
-        (default = 10)
+    returns: ndarray, shape=(N,)
+        Return series to calculate trend coefficient for.
+        NOTE: Assumes log-returns.
 
     Returns
     -------
     trend_coef: float, range=[-1., 1.]
         Time series' trend coefficient.
     """
-    n = len(x)
-    n_trunc = (n // n_bins) * n_bins
+    if returns.ndim != 1:
+        raise ValueError("Only 1D arrays are supported")
 
-    # Split series into equal sized bins
-    idxs = np.sort(np.random.choice(np.arange(n), n_trunc, replace=False))
-    splits = np.array(np.split(idxs, n_bins))
+    # Get rolling windows of length=SQRT(N)
+    windows = get_rolling_windows(returns, window_size=int(len(returns) ** 0.5))
 
-    # Calculate median value of bins (removes outliers)
-    split_medians = np.median(x[splits], axis=-1)
+    # Median return of each window
+    medians = np.median(windows, axis=-1)
 
-    # Rank values smallest to largest
-    ranks = np.argsort(np.argsort(split_medians))
+    # Cumulative returns
+    cumrets = np.cumsum(medians)
 
-    # Perfect up-trend (monotonically increasing ranks)
-    perfect_up_trend = np.arange(n_bins)
+    # Perfect up-trend (monotonically increasing cumulative return)
+    perfect_up_trend = np.arange(len(cumrets))
 
-    trend_coef = np.corrcoef(perfect_up_trend, ranks)[0, 1]
+    trend_coef = np.corrcoef(perfect_up_trend, cumrets)[0, 1]
 
     return trend_coef
 
