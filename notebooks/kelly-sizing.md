@@ -41,7 +41,7 @@ mpl.rcParams['axes.facecolor'] = 'white'
 # Load data
 
 ```python
-df = pd.read_csv("../data/world-indices/$SPX.csv")
+df = pd.read_csv("../data/world-indices/$N225.csv")
 ```
 
 ```python
@@ -65,7 +65,7 @@ rolling_stats = dict(
     dates = df.Date.values[np.arange(window_size, len(df))],
     avgs = windows.mean(-1),
     vols = np.median(np.abs(windows), axis=-1),
-    trends = np.apply_along_axis(get_robust_trend_coef, axis=-1, arr=windows.cumsum(axis=-1)),
+    trends = np.apply_along_axis(get_robust_trend_coef, axis=-1, arr=windows),
 )
 ```
 
@@ -93,32 +93,41 @@ axs[2].set_title("Rolling trends")
 
 ```python
 vol_threshold = np.median(rolling_stats["vols"])
-vol_flags = np.where(rolling_stats["vols"] <= vol_threshold, 1, 0)
+vol_flags = np.where(rolling_stats["vols"] <= vol_threshold, 0, 1)
+vol_states, vol_states_ct = np.unique(vol_flags, return_counts=True)
+vol_states, vol_states_ct
 ```
 
 ```python
-trend_flags = np.digitize(rolling_stats["trends"], bins=[-1.0, -0.25, 0.25, 1.0])
+trend_flags = np.digitize(rolling_stats["trends"], bins=[-1.0, -0.25, 0.25, 1.0]) - 1
+trend_states, trend_states_ct = np.unique(trend_flags, return_counts=True)
+trend_states, trend_states_ct
 ```
 
 ```python
-np.unique(z, return_counts=True)
+env_states_shape = (len(vol_states), len(trend_states))
+env_states = np.arange(np.prod(env_states_shape)).reshape(env_states_shape)
+env_flags = env_states[vol_flags, trend_flags]
+_, env_states_ct = np.unique(env_flags, return_counts=True)
+env_states, (env_states_ct.reshape(env_states_shape) / env_states_ct.sum()).round(2)
 ```
 
 ```python
-
-states = np.unique(env_flags)
-
-for state in states:
-    s = ret_avgs[env_flags == state] * 250
+for state in (states := env_states.flatten()):
+    s = rolling_stats["avgs"][env_flags == state] * 250
     print(f"{state}: {s.mean():>10.4f} {s.std():>10.4f}")
 ```
 
 ```python
-fig, axs = plt.subplots(nrows=2, figsize=(10,10), sharex=True)
+fig, axs = plt.subplots(nrows=len(states), figsize=(10,5*len(states)), sharex=True)
 
-bins = 30
+bins = np.linspace(
+    rolling_stats["avgs"].min(),
+    rolling_stats["avgs"].max(),
+    50,
+)
 for ax, state in zip(axs, states):
-    _, bins, _ = ax.hist(ret_avgs[env_flags == state], bins=bins, edgecolor="black")
+    _, bins, _ = ax.hist(rolling_stats["avgs"][env_flags == state], bins=bins, edgecolor="black")
     ax.set_title(f"{state}")
 ```
 
@@ -155,19 +164,35 @@ non_overlapping_envs.shape
 ```
 
 ```python
-obs_a = non_overlapping_envs[:-1]
-obs_b = non_overlapping_envs[1:]
+n_states = env_states.size
+transition_states = np.arange(n_states**2).reshape(n_states, n_states)
 
-transition_matrix = np.array([
-    [
-        np.logical_and(obs_a == state_a, obs_b == state_b).sum().astype(float)
-        for state_b in states
-    ]
-    for state_a in states
-])
-
+_, transition_counts = np.unique(
+    transition_states[non_overlapping_envs[:-1], non_overlapping_envs[1:]],
+    return_counts=True
+)
+transition_matrix = transition_counts.reshape(n_states, n_states).astype(np.float64)
 transition_matrix /= transition_matrix.sum(-1, keepdims=True)
-transition_matrix
+transition_matrix.round(2)
+```
+
+```python
+baseline_freqs = (env_states_ct.reshape(env_states_shape) / env_states_ct.sum())
+tm4d = transition_matrix.reshape(env_states_shape+env_states_shape)
+```
+
+```python
+vol_state = 1
+trend_state = 0
+
+print("Baseline")
+print(baseline_freqs.round(2))
+print()
+print("Transition Probs")
+print(tm4d[vol_state, trend_state].round(2))
+print()
+print("Rel to baseline")
+print((tm4d[vol_state, trend_state] - baseline_freqs).round(2))
 ```
 
 ```python
