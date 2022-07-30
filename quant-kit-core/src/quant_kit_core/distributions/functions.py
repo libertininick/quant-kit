@@ -1,3 +1,4 @@
+import warnings
 from typing import List, Tuple, Union
 from warnings import warn
 
@@ -77,22 +78,26 @@ def get_best_fit_distribution(
     restarts = [np.random.choice(data, sample_size) for _ in range(n_restarts)]
     earth_mv_dists = []
     for dist in dists:
-        try:
-            with time_limit(fit_time_limit):
-                earth_mv_dists.append(
-                    [
-                        stats.wasserstein_distance(
-                            x_sample, dist.fit(x_sample).sample(size=sample_size)
-                        )
-                        for x_sample in restarts
-                    ]
-                )
-        except TimeoutException:
-            print(f"Fitting {dist.name} timed out")
-            earth_mv_dists.append([np.nan] * n_restarts)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error")
+            try:
+                with time_limit(fit_time_limit):
+                    earth_mv_dists.append(
+                        [
+                            stats.wasserstein_distance(
+                                x_sample, dist.fit(x_sample).sample(size=sample_size)
+                            )
+                            for x_sample in restarts
+                        ]
+                    )
+            except TimeoutException:
+                print(f"Fitting {dist.name} timed out")
+                earth_mv_dists.append([np.nan] * n_restarts)
+            except Warning:
+                earth_mv_dists.append([np.nan] * n_restarts)
     earth_mv_dists = np.array(earth_mv_dists)
 
-    # Filter out dists that failed to fit in time limit
+    # Filter out dists that failed to fit in time limit or raised a warning
     mask = np.isfinite(earth_mv_dists).all(-1)
     dists = np.array(dists)[mask]
     earth_mv_dists = earth_mv_dists[mask]
