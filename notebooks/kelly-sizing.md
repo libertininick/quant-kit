@@ -23,6 +23,7 @@ import pandas as pd
 import scipy.stats as stats
 
 from numpy import ndarray
+from quant_kit_core.distributions import get_best_fit_distribution
 from quant_kit_core.time_series import (
     get_robust_trend_coef, 
     get_rolling_windows,
@@ -41,7 +42,7 @@ mpl.rcParams['axes.facecolor'] = 'white'
 # Load data
 
 ```python
-df = pd.read_csv("../data/world-indices/$N225.csv")
+df = pd.read_csv("../data/world-indices/$SPX.csv")
 ```
 
 ```python
@@ -53,6 +54,34 @@ df
 ```python
 prices = df.Close.values
 log_ret = np.log(prices[1:]/prices[:-1])
+```
+
+```python
+dists, scores = get_best_fit_distribution(log_ret, support=(-np.inf, np.inf), return_scores=True)
+```
+
+## Boostrapped sample staistics
+
+```python
+n_boostraps = 10000
+samples = np.random.choice(log_ret, size=(n_boostraps, len(log_ret)), replace=True)
+means = samples.mean(axis=-1)
+stds = (samples**2).mean(axis=-1)**0.5
+```
+
+```python
+dists, scores = get_best_fit_distribution(means, support=(-np.inf, np.inf), return_scores=True)
+```
+
+```python
+# Normalization stats
+mu, std = means.mean(), stds.mean()
+```
+
+```python
+fig, axs = plt.subplots(ncols=2, figsize=(15,7))
+axs[0].hist(means*250, bins=30, edgecolor="black")
+axs[1].hist(stds*250**0.5, bins=30, edgecolor="black")
 ```
 
 ```python
