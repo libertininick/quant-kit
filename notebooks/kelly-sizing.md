@@ -42,7 +42,7 @@ mpl.rcParams['axes.facecolor'] = 'white'
 # Load data
 
 ```python
-df = pd.read_csv("../data/world-indices/$SPX.csv")
+df = pd.read_csv("../data/world-indices/$N225.csv")
 ```
 
 ```python
@@ -53,18 +53,14 @@ df
 
 ```python
 prices = df.Close.values
-log_ret = np.log(prices[1:]/prices[:-1])
-```
-
-```python
-dists, scores = get_best_fit_distribution(log_ret, support=(-np.inf, np.inf), return_scores=True)
+log_rets = np.log(prices[1:]/prices[:-1])
 ```
 
 ## Boostrapped sample staistics
 
 ```python
 n_boostraps = 10000
-samples = np.random.choice(log_ret, size=(n_boostraps, len(log_ret)), replace=True)
+samples = np.random.choice(log_rets, size=(n_boostraps, len(log_rets)), replace=True)
 means = samples.mean(axis=-1)
 stds = (samples**2).mean(axis=-1)**0.5
 ```
@@ -79,6 +75,10 @@ mu, std = means.mean(), stds.mean()
 ```
 
 ```python
+norm_log_rets = (log_rets - mu) / std
+```
+
+```python
 fig, axs = plt.subplots(ncols=2, figsize=(15,7))
 axs[0].hist(means*250, bins=30, edgecolor="black")
 axs[1].hist(stds*250**0.5, bins=30, edgecolor="black")
@@ -86,14 +86,14 @@ axs[1].hist(stds*250**0.5, bins=30, edgecolor="black")
 
 ```python
 window_size = 60
-windows = get_rolling_windows(log_ret, window_size)
+windows = get_rolling_windows(norm_log_rets, window_size)
 
 
 # Rolling stats
 rolling_stats = dict(
     dates = df.Date.values[np.arange(window_size, len(df))],
     avgs = windows.mean(-1),
-    vols = np.median(np.abs(windows), axis=-1),
+    vols = np.mean(windows**2, axis=-1)**0.5,
     trends = np.apply_along_axis(get_robust_trend_coef, axis=-1, arr=windows),
 )
 ```
@@ -103,11 +103,13 @@ fig, axs = plt.subplots(nrows=3, figsize=(15,15))
 ticks = np.arange(0, len(rolling_stats["dates"]), 250*5)
 
 axs[0].plot(rolling_stats["avgs"])
+axs[0].axhline(y=0, color="gray")
 axs[0].set_xticks(ticks)
 axs[0].set_xticklabels([dt[:4] for dt in rolling_stats["dates"][ticks]])
 axs[0].set_title("Rolling avg return")
 
 axs[1].plot(rolling_stats["vols"])
+axs[1].axhline(y=1, color="gray")
 axs[1].set_xticks(ticks)
 axs[1].set_xticklabels([dt[:4] for dt in rolling_stats["dates"][ticks]])
 axs[1].set_title("Rolling vol")
@@ -121,7 +123,11 @@ axs[2].set_title("Rolling trends")
 # Environment segmentation
 
 ```python
-vol_threshold = np.median(rolling_stats["vols"])
+np.mean(rolling_stats["vols"]), np.median(rolling_stats["vols"])
+```
+
+```python
+vol_threshold = 0.75
 vol_flags = np.where(rolling_stats["vols"] <= vol_threshold, 0, 1)
 vol_states, vol_states_ct = np.unique(vol_flags, return_counts=True)
 vol_states, vol_states_ct
@@ -141,40 +147,55 @@ _, env_states_ct = np.unique(env_flags, return_counts=True)
 env_states, (env_states_ct.reshape(env_states_shape) / env_states_ct.sum()).round(2)
 ```
 
+## Fit distribution to each env
+
 ```python
-for state in (states := env_states.flatten()):
-    s = rolling_stats["avgs"][env_flags == state] * 250
-    print(f"{state}: {s.mean():>10.4f} {s.std():>10.4f}")
+candidate_distributions = [
+    "exponnorm",
+    "genlogistic",
+    "johnsonsu",
+    "nct",
+    "norm",
+    "norminvgauss",
+    "powerlognorm",
+    "t",
+]
 ```
 
 ```python
-fig, axs = plt.subplots(nrows=len(states), figsize=(10,5*len(states)), sharex=True)
+dist = stats.distributions.johnsonsu
+env_dists = dict()
+
+fig, axs = plt.subplots(
+    nrows=env_states.size, 
+    figsize=(10,5*env_states.size), 
+    sharex=True,
+)
 
 bins = np.linspace(
     rolling_stats["avgs"].min(),
     rolling_stats["avgs"].max(),
     50,
 )
-for ax, state in zip(axs, states):
-    _, bins, _ = ax.hist(rolling_stats["avgs"][env_flags == state], bins=bins, edgecolor="black")
-    ax.set_title(f"{state}")
-```
-
-## Fit distribution to each env
-
-```python
-dist = stats.distributions.johnsonsu
-
-env_dists = dict()
-fig, axs = plt.subplots(nrows=2, figsize=(10,10), sharex=True)
-bins = 30
-for ax, state in zip(axs, states):
-    env_dists[state] = dist(*dist.fit(ret_avgs[env_flags == state]))
-    _, bins, _ = ax.hist(
-        env_dists[state].rvs(10000),
-        bins=bins,
-        edgecolor="black"
+for ax, state in zip(axs, env_states.flatten()):
+    # Filter to rolling averages for state
+    state_avgs = rolling_stats["avgs"][env_flags == state]
+    
+    # Fit distribution
+    dists = get_best_fit_distribution(
+        state_avgs,
+        candidate_distributions=candidate_distributions,
+        n_restarts=100,
+        support=(-np.inf, np.inf),
+        fit_time_limit=30,
     )
+    env_dists[state] = dists[0]
+    
+    # Print state stats
+    print(f"{state}: {env_dists[state].name:<30} {state_avgs.mean():>10.4f} {state_avgs.std():>10.4f}")
+    
+    _, bins, _ = ax.hist(state_avgs, bins=bins, density=True, edgecolor="black")
+    ax.plot(bins, env_dists[state].pdf(bins), color="black")
     ax.set_title(f"{state}")
 ```
 
@@ -212,7 +233,7 @@ tm4d = transition_matrix.reshape(env_states_shape+env_states_shape)
 
 ```python
 vol_state = 1
-trend_state = 0
+trend_state = 2
 
 print("Baseline")
 print(baseline_freqs.round(2))
@@ -231,7 +252,7 @@ def get_next_state(state: int, transition_matrix: ndarray) -> int:
 ```
 
 ```python
-n_sims = 1000
+n_sims = 10000
 n_steps = 30*4
 sim_states = []
 for _ in range(n_sims):
@@ -246,21 +267,18 @@ sim_states = np.array(sim_states)
 ```
 
 ```python
-sim_rets = np.vectorize(lambda x: env_dists.get(x).rvs(1))(sim_states)
+sim_rets = np.stack([dist.sample(size=(n_sims,n_steps)) for dist in env_dists.values()], axis=-1)
+sim_rets = np.take_along_axis(sim_rets, sim_states[..., None], axis=-1).squeeze(-1)
 ```
 
 ```python
-tot_rets = np.exp((sim_rets * window_size).sum(-1))
+# tot_rets = np.exp((sim_rets * window_size).sum(-1))
 fig, ax = plt.subplots(figsize=(10,5), sharex=True)
 _ = ax.hist(
-    tot_rets,
+    sim_rets.sum(-1),
     bins=30,
     edgecolor="black",
 )
-```
-
-```python
-np.quantile(tot_rets, q=[0.05, 0.25, 0.5, 0.75, 0.95])
 ```
 
 ```python
