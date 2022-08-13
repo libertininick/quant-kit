@@ -42,7 +42,7 @@ mpl.rcParams['axes.facecolor'] = 'white'
 # Load data
 
 ```python
-df = pd.read_csv("../data/world-indices/$N225.csv")
+df = pd.read_csv("../data/world-indices/$SPX.csv")
 ```
 
 ```python
@@ -130,21 +130,42 @@ np.mean(rolling_stats["vols"]), np.median(rolling_stats["vols"])
 vol_threshold = 0.75
 vol_flags = np.where(rolling_stats["vols"] <= vol_threshold, 0, 1)
 vol_states, vol_states_ct = np.unique(vol_flags, return_counts=True)
-vol_states, vol_states_ct
+
+step_size=250*15
+print(vol_states)
+print((vol_states_ct / vol_states_ct.sum()).round(2))
+print("-"*15)
+for i in np.arange(0,len(vol_flags), step_size)[1:]:
+    _, vol_states_ct = np.unique(vol_flags[i-step_size:i], return_counts=True)
+    print((vol_states_ct / vol_states_ct.sum()).round(2))
 ```
 
 ```python
 trend_flags = np.digitize(rolling_stats["trends"], bins=[-1.0, -0.25, 0.25, 1.0]) - 1
 trend_states, trend_states_ct = np.unique(trend_flags, return_counts=True)
-trend_states, trend_states_ct
+
+step_size=250*15
+print(trend_states)
+print((trend_states_ct / trend_states_ct.sum()).round(2))
+print("-"*15)
+for i in np.arange(0,len(trend_flags), step_size)[1:]:
+    _, trend_states_ct = np.unique(trend_flags[i-step_size:i], return_counts=True)
+    print((trend_states_ct / trend_states_ct.sum()).round(2))
 ```
 
 ```python
 env_states_shape = (len(vol_states), len(trend_states))
 env_states = np.arange(np.prod(env_states_shape)).reshape(env_states_shape)
 env_flags = env_states[vol_flags, trend_flags]
-_, env_states_ct = np.unique(env_flags, return_counts=True)
-env_states, (env_states_ct.reshape(env_states_shape) / env_states_ct.sum()).round(2)
+env_states, env_states_ct = np.unique(env_flags, return_counts=True)
+
+step_size=250*15
+print(env_states)
+print((env_states_ct / env_states_ct.sum()).round(2))
+print("-"*30)
+for i in np.arange(0,len(env_flags), step_size)[1:]:
+    _, env_states_ct = np.unique(env_flags[i-step_size:i], return_counts=True)
+    print((env_states_ct / env_states_ct.sum()).round(2))
 ```
 
 ## Fit distribution to each env
