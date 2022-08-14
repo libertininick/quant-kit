@@ -39,6 +39,19 @@ mpl.rcParams['figure.facecolor'] = 'white'
 mpl.rcParams['axes.facecolor'] = 'white'
 ```
 
+```python
+candidate_distributions = [
+    "exponnorm",
+    "genlogistic",
+    "johnsonsu",
+    "nct",
+    "norm",
+    "norminvgauss",
+    "powerlognorm",
+    "t",
+]
+```
+
 # Load data
 
 ```python
@@ -63,25 +76,25 @@ n_boostraps = 10000
 samples = np.random.choice(log_rets, size=(n_boostraps, len(log_rets)), replace=True)
 means = samples.mean(axis=-1)
 stds = (samples**2).mean(axis=-1)**0.5
-```
 
-```python
-dists, scores = get_best_fit_distribution(means, support=(-np.inf, np.inf), return_scores=True)
-```
-
-```python
 # Normalization stats
 mu, std = means.mean(), stds.mean()
-```
-
-```python
 norm_log_rets = (log_rets - mu) / std
-```
 
-```python
 fig, axs = plt.subplots(ncols=2, figsize=(15,7))
 axs[0].hist(means*250, bins=30, edgecolor="black")
 axs[1].hist(stds*250**0.5, bins=30, edgecolor="black")
+```
+
+```python
+dists, scores = get_best_fit_distribution(
+    means,
+    candidate_distributions=candidate_distributions,
+    support=(-np.inf, np.inf),
+    n_restarts=100,
+    fit_time_limit=30,
+    return_scores=True
+)
 ```
 
 ```python
@@ -96,6 +109,13 @@ rolling_stats = dict(
     vols = np.mean(windows**2, axis=-1)**0.5,
     trends = np.apply_along_axis(get_robust_trend_coef, axis=-1, arr=windows),
 )
+
+med_vol_window_size = 250*10
+vol_median = np.median(get_rolling_windows(rolling_stats["vols"], med_vol_window_size), axis=-1)
+rolling_stats["vol_median"] = np.concatenate((
+    np.full(shape=(med_vol_window_size - 1,), fill_value=vol_median[0]),
+    vol_median,
+))
 ```
 
 ```python
@@ -109,7 +129,8 @@ axs[0].set_xticklabels([dt[:4] for dt in rolling_stats["dates"][ticks]])
 axs[0].set_title("Rolling avg return")
 
 axs[1].plot(rolling_stats["vols"])
-axs[1].axhline(y=1, color="gray")
+axs[1].plot(rolling_stats["vol_median"], color="orange")
+axs[1].axhline(y=np.median(rolling_stats["vols"]), color="gray")
 axs[1].set_xticks(ticks)
 axs[1].set_xticklabels([dt[:4] for dt in rolling_stats["dates"][ticks]])
 axs[1].set_title("Rolling vol")
@@ -123,34 +144,34 @@ axs[2].set_title("Rolling trends")
 # Environment segmentation
 
 ```python
-np.mean(rolling_stats["vols"]), np.median(rolling_stats["vols"])
+step_size=250*15
 ```
 
 ```python
-vol_threshold = 0.75
-vol_flags = np.where(rolling_stats["vols"] <= vol_threshold, 0, 1)
+vol_flags = np.where(rolling_stats["vols"] <= rolling_stats["vol_median"], 0, 1)
 vol_states, vol_states_ct = np.unique(vol_flags, return_counts=True)
+state_freqs = vol_states_ct / vol_states_ct.sum()
 
-step_size=250*15
-print(vol_states)
-print((vol_states_ct / vol_states_ct.sum()).round(2))
-print("-"*15)
-for i in np.arange(0,len(vol_flags), step_size)[1:]:
+
+print([f"{s}:{f:>4.0%}" for s, f in zip(vol_states, state_freqs)])
+print("-"*20)
+for i in np.arange(0, len(vol_flags), step_size)[1:]:
     _, vol_states_ct = np.unique(vol_flags[i-step_size:i], return_counts=True)
-    print((vol_states_ct / vol_states_ct.sum()).round(2))
+    state_freqs = vol_states_ct / vol_states_ct.sum()
+    print([f"{s}:{f:>4.0%}" for s, f in zip(vol_states, state_freqs)])
 ```
 
 ```python
 trend_flags = np.digitize(rolling_stats["trends"], bins=[-1.0, -0.25, 0.25, 1.0]) - 1
 trend_states, trend_states_ct = np.unique(trend_flags, return_counts=True)
+state_freqs = trend_states_ct / trend_states_ct.sum()
 
-step_size=250*15
-print(trend_states)
-print((trend_states_ct / trend_states_ct.sum()).round(2))
-print("-"*15)
+print([f"{s}:{f:>4.0%}" for s, f in zip(trend_states, state_freqs)])
+print("-"*30)
 for i in np.arange(0,len(trend_flags), step_size)[1:]:
     _, trend_states_ct = np.unique(trend_flags[i-step_size:i], return_counts=True)
-    print((trend_states_ct / trend_states_ct.sum()).round(2))
+    state_freqs = trend_states_ct / trend_states_ct.sum()
+    print([f"{s}:{f:>4.0%}" for s, f in zip(trend_states, state_freqs)])
 ```
 
 ```python
@@ -158,30 +179,17 @@ env_states_shape = (len(vol_states), len(trend_states))
 env_states = np.arange(np.prod(env_states_shape)).reshape(env_states_shape)
 env_flags = env_states[vol_flags, trend_flags]
 env_states, env_states_ct = np.unique(env_flags, return_counts=True)
+state_freqs = env_states_ct / env_states_ct.sum()
 
-step_size=250*15
-print(env_states)
-print((env_states_ct / env_states_ct.sum()).round(2))
-print("-"*30)
+print([f"{s}:{f:>4.0%}" for s, f in zip(env_states, state_freqs)])
+print("-"*60)
 for i in np.arange(0,len(env_flags), step_size)[1:]:
     _, env_states_ct = np.unique(env_flags[i-step_size:i], return_counts=True)
-    print((env_states_ct / env_states_ct.sum()).round(2))
+    state_freqs = env_states_ct / env_states_ct.sum()
+    print([f"{s}:{f:>4.0%}" for s, f in zip(env_states, state_freqs)])
 ```
 
 ## Fit distribution to each env
-
-```python
-candidate_distributions = [
-    "exponnorm",
-    "genlogistic",
-    "johnsonsu",
-    "nct",
-    "norm",
-    "norminvgauss",
-    "powerlognorm",
-    "t",
-]
-```
 
 ```python
 dist = stats.distributions.johnsonsu
@@ -245,6 +253,24 @@ _, transition_counts = np.unique(
 transition_matrix = transition_counts.reshape(n_states, n_states).astype(np.float64)
 transition_matrix /= transition_matrix.sum(-1, keepdims=True)
 transition_matrix.round(2)
+```
+
+```python
+step_size = 4*10
+env_idx = 3
+print([f"{s}:{f:>4.0%}" for s, f in zip(env_states, transition_matrix[env_idx])])
+print("-"*60)
+for i in np.arange(0,len(non_overlapping_envs), step_size)[1:]:
+    noe_i = non_overlapping_envs[i-step_size:i]
+    states_i = transition_states[noe_i[:-1], noe_i[1:]]
+    transition_matrix_i = np.array(
+        [
+            (states_i == st).sum() 
+            for st in range(n_states**2)
+        ]
+    ).reshape(n_states, n_states).astype(np.float64)
+    transition_matrix_i /= transition_matrix_i.sum(-1, keepdims=True)
+    print([f"{s}:{f:>4.0%}" for s, f in zip(env_states, transition_matrix_i[env_idx])])
 ```
 
 ```python
