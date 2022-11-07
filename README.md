@@ -1,5 +1,5 @@
 # quant-kit
-Quantitative Investment and Trading Toolkit
+A multi-module Python repository for quantitative investment and trading tools.
 
 
 ## Environment setup & installation of modules
