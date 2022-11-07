@@ -87,30 +87,45 @@ axs[1].hist(stds*250**0.5, bins=30, edgecolor="black")
 ```
 
 ```python
-dists, scores = get_best_fit_distribution(
+mean_dist = get_best_fit_distribution(
     means,
     candidate_distributions=candidate_distributions,
     support=(-np.inf, np.inf),
     n_restarts=100,
     fit_time_limit=30,
-    return_scores=True
-)
+)[0]
+
+mean_dist
 ```
 
 ```python
-window_size = 60
-windows = get_rolling_windows(norm_log_rets, window_size)
+std_dist = get_best_fit_distribution(
+    stds,
+    candidate_distributions=candidate_distributions,
+    support=(-np.inf, np.inf),
+    n_restarts=100,
+    fit_time_limit=30,
+)[0]
+std_dist
+```
 
+## Rolling windows
+
+```python
+window_size = 60
+med_vol_window_size = window_size * 4 * 10
+
+norm_log_ret_windows = get_rolling_windows(norm_log_rets, window_size)
+print(norm_log_ret_windows.shape)
 
 # Rolling stats
 rolling_stats = dict(
     dates = df.Date.values[np.arange(window_size, len(df))],
-    avgs = windows.mean(-1),
-    vols = np.mean(windows**2, axis=-1)**0.5,
-    trends = np.apply_along_axis(get_robust_trend_coef, axis=-1, arr=windows),
+    avgs = norm_log_ret_windows.mean(-1),
+    vols = np.mean(norm_log_ret_windows**2, axis=-1)**0.5,
+    trends = np.apply_along_axis(get_robust_trend_coef, axis=-1, arr=norm_log_ret_windows),
 )
 
-med_vol_window_size = 250*10
 vol_median = np.median(get_rolling_windows(rolling_stats["vols"], med_vol_window_size), axis=-1)
 rolling_stats["vol_median"] = np.concatenate((
     np.full(shape=(med_vol_window_size - 1,), fill_value=vol_median[0]),
@@ -144,8 +159,10 @@ axs[2].set_title("Rolling trends")
 # Environment segmentation
 
 ```python
-step_size=250*15
+step_size = window_size * 4 * 15
 ```
+
+## Volatility environments
 
 ```python
 vol_flags = np.where(rolling_stats["vols"] <= rolling_stats["vol_median"], 0, 1)
@@ -161,6 +178,8 @@ for i in np.arange(0, len(vol_flags), step_size)[1:]:
     print([f"{s}:{f:>4.0%}" for s, f in zip(vol_states, state_freqs)])
 ```
 
+## Trend environments
+
 ```python
 trend_flags = np.digitize(rolling_stats["trends"], bins=[-1.0, -0.25, 0.25, 1.0]) - 1
 trend_states, trend_states_ct = np.unique(trend_flags, return_counts=True)
@@ -174,10 +193,24 @@ for i in np.arange(0,len(trend_flags), step_size)[1:]:
     print([f"{s}:{f:>4.0%}" for s, f in zip(trend_states, state_freqs)])
 ```
 
+## Vol + Trend environments
+
+```
+0: Low  Vol | Downtrend
+1: Low  Vol | No Trend
+2: Low  Vol | Uptrend
+3: High Vol | Downtrend
+4: High Vol | No Trend
+5: High Vol | Up Trend
+```
+
 ```python
 env_states_shape = (len(vol_states), len(trend_states))
 env_states = np.arange(np.prod(env_states_shape)).reshape(env_states_shape)
+
 env_flags = env_states[vol_flags, trend_flags]
+print(env_flags.shape)
+
 env_states, env_states_ct = np.unique(env_flags, return_counts=True)
 state_freqs = env_states_ct / env_states_ct.sum()
 
@@ -202,33 +235,53 @@ fig, axs = plt.subplots(
 )
 
 bins = np.linspace(
-    rolling_stats["avgs"].min(),
-    rolling_stats["avgs"].max(),
-    50,
+    state_norm_log_rets.min(),
+    state_norm_log_rets.max(),
+    100,
 )
 for ax, state in zip(axs, env_states.flatten()):
-    # Filter to rolling averages for state
-    state_avgs = rolling_stats["avgs"][env_flags == state]
+    # Filter to daily, normalized log returns for state
+    state_norm_log_rets = norm_log_ret_windows[env_flags == state].reshape(-1)
     
     # Fit distribution
     dists = get_best_fit_distribution(
-        state_avgs,
-        candidate_distributions=candidate_distributions,
-        n_restarts=100,
+        state_norm_log_rets,
+        candidate_distributions=["norminvgauss", "johnsonsu"],
+        n_restarts=10,
+        sample_size=2500,
         support=(-np.inf, np.inf),
         fit_time_limit=30,
     )
     env_dists[state] = dists[0]
     
     # Print state stats
-    print(f"{state}: {env_dists[state].name:<30} {state_avgs.mean():>10.4f} {state_avgs.std():>10.4f}")
+    print(f"{state}: {env_dists[state].name:<30} {state_norm_log_rets.mean():>10.4f} {state_norm_log_rets.std():>10.4f}")
     
-    _, bins, _ = ax.hist(state_avgs, bins=bins, density=True, edgecolor="black")
+    _, bins, _ = ax.hist(state_norm_log_rets, bins=bins, density=True, edgecolor="black")
     ax.plot(bins, env_dists[state].pdf(bins), color="black")
     ax.set_title(f"{state}")
 ```
 
 # Transition matrix
+
+```
+        0   1   2   3   4   5
+-------------------------------        
+0 |  [[ 0,  1,  2,  3,  4,  5],
+1 |   [ 6,  7,  8,  9, 10, 11],
+2 |   [12, 13, 14, 15, 16, 17],
+3 |   [18, 19, 20, 21, 22, 23],
+4 |   [24, 25, 26, 27, 28, 29],
+5 |   [30, 31, 32, 33, 34, 35]]
+```
+
+```python
+n_states = env_states.size
+transition_states = np.arange(n_states**2).reshape(n_states, n_states)
+transition_states
+```
+
+## Sequences of non-overlapping environments
 
 ```python
 n = len(env_flags)
@@ -242,90 +295,181 @@ non_overlapping_envs = env_flags[non_overlapping_idxs]
 non_overlapping_envs.shape
 ```
 
-```python
-n_states = env_states.size
-transition_states = np.arange(n_states**2).reshape(n_states, n_states)
-
-_, transition_counts = np.unique(
-    transition_states[non_overlapping_envs[:-1], non_overlapping_envs[1:]],
-    return_counts=True
-)
-transition_matrix = transition_counts.reshape(n_states, n_states).astype(np.float64)
-transition_matrix /= transition_matrix.sum(-1, keepdims=True)
-transition_matrix.round(2)
-```
+## Rolling samplining windows to estimate transition matrix
 
 ```python
-step_size = 4*10
-env_idx = 3
-print([f"{s}:{f:>4.0%}" for s, f in zip(env_states, transition_matrix[env_idx])])
-print("-"*60)
-for i in np.arange(0,len(non_overlapping_envs), step_size)[1:]:
-    noe_i = non_overlapping_envs[i-step_size:i]
-    states_i = transition_states[noe_i[:-1], noe_i[1:]]
-    transition_matrix_i = np.array(
+def get_transition_probas(
+    non_overlapping_envs: ndarray, env_states: ndarray = None
+) -> ndarray:
+    """Estimate transition probabilities from a series of non-overlapping environment sequences
+    
+    Parameters
+    ----------
+    non_overlapping_envs: ndarray, shape(seq_len, n_non_overlapping)
+        Sequences of non-overlapping environments (1 sequence per column)
+    env_states: ndarray, shape=(n_envs,)
+        All posible environment states.
+        If ``None``, states will be inferred from sequences.
+        (default=None)
+        
+    Returns
+    -------
+    transition_probas: ndarray, shape=(n_envs, n_envs)
+        Probability of transitioning from a given environment to all other environments.
+        Each row represents the transition probabilites for a given environment.
+        Rows should sum to 1.
+    """
+    
+    if env_states is None:
+        env_states = np.unique(non_overlapping_envs)
+    else:
+        env_states = env_states[np.argsort(env_states)]
+    
+    # Code book for looking up a transition state given ``env_state_0`` and ``env_state_1``
+    n_env_states = len(env_states)
+    n_transition_states = n_env_states**2
+    transition_states = np.arange(n_transition_states).reshape(n_env_states, n_env_states)
+    
+    # Code the sequences of environments by transition states
+    env_states_0 = non_overlapping_envs[:-1]
+    env_states_1 = non_overlapping_envs[1:]
+    transitions = transition_states[env_states_0, env_states_1]
+    
+    # Count the number of times transitioned for each pair of environment states
+    transition_counts = np.array(
         [
-            (states_i == st).sum() 
-            for st in range(n_states**2)
+            (transitions == ts).sum() 
+            for ts in transition_states.flatten()
         ]
-    ).reshape(n_states, n_states).astype(np.float64)
-    transition_matrix_i /= transition_matrix_i.sum(-1, keepdims=True)
-    print([f"{s}:{f:>4.0%}" for s, f in zip(env_states, transition_matrix_i[env_idx])])
+    ).reshape(n_env_states, n_env_states).astype(np.float64)
+    
+    # Normalized by counts of each environment
+    transition_probas = transition_counts / transition_counts.sum(-1, keepdims=True)
+    
+    return transition_probas
 ```
 
 ```python
-baseline_freqs = (env_states_ct.reshape(env_states_shape) / env_states_ct.sum())
-tm4d = transition_matrix.reshape(env_states_shape+env_states_shape)
+sampling_window_size = int(250 /window_size * 10)
+
+rws = get_rolling_windows(non_overlapping_envs, window_size=sampling_window_size)
+
+transition_matrices = np.apply_along_axis(
+    lambda x, *args: get_transition_probas(x.reshape(rws.shape[1:]), env_states),
+    axis=-1,
+    arr=rws.reshape(rws.shape[0], -1)
+)
+assert np.allclose(transition_matrices.sum(-1), 1.)
+
+transition_matrices.shape
 ```
 
 ```python
-vol_state = 1
-trend_state = 2
-
-print("Baseline")
-print(baseline_freqs.round(2))
-print()
-print("Transition Probs")
-print(tm4d[vol_state, trend_state].round(2))
-print()
-print("Rel to baseline")
-print((tm4d[vol_state, trend_state] - baseline_freqs).round(2))
+fig, ax = plt.subplots(figsize=(10,5))
+_ = ax.hist(transition_matrices[..., 0,0], bins=10, edgecolor="black")
 ```
 
 ```python
-def get_next_state(state: int, transition_matrix: ndarray) -> int:
+np.median(transition_matrices, 0).round(2)
+```
+
+```python
+get_transition_probas(non_overlapping_envs, env_states).round(2)
+```
+
+# Simulations
+
+```python
+def get_next_state(state: int, transition_matrix: ndarray, rnd: np.random.RandomState = None) -> int:
+    if rnd is None:
+        rnd = np.random.RandomState()
+        
     p = transition_matrix[state]
-    return np.random.choice(np.arange(len(p)), size=1, p=p)[0]
+    return rnd.choice(np.arange(len(p)), size=1, p=p)[0]
 ```
 
 ```python
 n_sims = 10000
 n_steps = 30*4
+rnd = np.random.RandomState(1234)
+
 sim_states = []
 for _ in range(n_sims):
+    # sample a transition matrix
+    transition_matrix = transition_matrices[rnd.choice(np.arange(len(transition_matrices)))]
     
-    state = np.random.choice(np.arange(len(transition_matrix)), size=1)[0]
+    state = rnd.choice(np.arange(len(transition_matrix)), size=1)[0]
     states = [state]
-    for _ in range(n_steps - 1):
-        state = get_next_state(state, transition_matrix)
+    for _ in range(n_steps):
+        state = get_next_state(state, transition_matrix, rnd)
         states.append(state)
     sim_states.append(states)
 sim_states = np.array(sim_states)
+sim_states.shape
 ```
 
 ```python
-sim_rets = np.stack([dist.sample(size=(n_sims,n_steps)) for dist in env_dists.values()], axis=-1)
-sim_rets = np.take_along_axis(sim_rets, sim_states[..., None], axis=-1).squeeze(-1)
+# Sample daily returns for each environment
+sim_rets = np.stack([dist.sample(size=(n_sims, n_steps, window_size)) for dist in env_dists.values()], axis=-1)
+
+# Index to the tranistioned environment for each step
+sim_rets = np.take_along_axis(sim_rets, sim_states[:, 1:, None, None], axis=-1).squeeze(-1)
+
+# Reshape to daily ret sequences
+sim_rets = sim_rets.reshape(n_sims, n_steps * window_size)
+
+# Denormalize returns
+sim_rets = sim_rets * std_dist.sample((n_sims,1)) + mean_dist.sample((n_sims,1))
+
+
+sim_rets = np.exp(sim_rets) - 1
+# sim_rets.shape
 ```
 
 ```python
-# tot_rets = np.exp((sim_rets * window_size).sum(-1))
 fig, ax = plt.subplots(figsize=(10,5), sharex=True)
 _ = ax.hist(
     sim_rets.sum(-1),
     bins=30,
     edgecolor="black",
 )
+```
+
+```python
+fig, ax = plt.subplots(figsize=(15,7))
+ax.plot(np.exp(np.cumsum(np.log(sim_rets[8] + 1), axis=-1)))
+```
+
+# Sizing optimization
+
+```python
+exposures = np.random.ones(len(env_states))
+exposures
+```
+
+```python
+def get_max_drawdown(returns: ndarray, axis: int = -1) -> ndarray:
+    equity_curves = np.exp(np.cumsum(np.log(returns + 1), axis=axis))
+    max_equities = np.maximum.accumulate(equity_curves, axis=axis)
+    drawdowns = equity_curves / max_equities - 1
+    return np.min(drawdowns, axis=axis), np.argmin(drawdowns, axis=axis)
+```
+
+```python
+returns = exposures[sim_states[:,:-1]]*sim_rets
+```
+
+```python
+
+```
+
+```python
+get_max_drawdown(returns)
+```
+
+```python
+fig, ax = plt.subplots(figsize=(10,5), sharex=True)
+_ = ax.plot(np.exp(np.cumsum(np.log(returns[5] + 1), axis=-1)))
 ```
 
 ```python
