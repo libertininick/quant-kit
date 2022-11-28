@@ -72,7 +72,7 @@ log_rets = np.log(prices[1:]/prices[:-1])
 ## Boostrapped sample staistics
 
 ```python
-n_boostraps = 10000
+n_boostraps = 1000
 samples = np.random.choice(log_rets, size=(n_boostraps, len(log_rets)), replace=True)
 means = samples.mean(axis=-1)
 stds = (samples**2).mean(axis=-1)**0.5
@@ -225,7 +225,10 @@ for i in np.arange(0,len(env_flags), step_size)[1:]:
 ## Fit distribution to each env
 
 ```python
-dist = stats.distributions.johnsonsu
+from quant_kit_core.distributions import ContinuousDistribution
+```
+
+```python
 env_dists = dict()
 
 fig, axs = plt.subplots(
@@ -234,25 +237,15 @@ fig, axs = plt.subplots(
     sharex=True,
 )
 
-bins = np.linspace(
-    state_norm_log_rets.min(),
-    state_norm_log_rets.max(),
-    100,
-)
+
+bins = np.linspace(*np.quantile(norm_log_rets, q=[0, 1]), 100)
 for ax, state in zip(axs, env_states.flatten()):
     # Filter to daily, normalized log returns for state
     state_norm_log_rets = norm_log_ret_windows[env_flags == state].reshape(-1)
     
     # Fit distribution
-    dists = get_best_fit_distribution(
-        state_norm_log_rets,
-        candidate_distributions=["norminvgauss", "johnsonsu"],
-        n_restarts=10,
-        sample_size=2500,
-        support=(-np.inf, np.inf),
-        fit_time_limit=30,
-    )
-    env_dists[state] = dists[0]
+    dist = ContinuousDistribution.from_name("norminvgauss").fit(state_norm_log_rets)
+    env_dists[state] = dist
     
     # Print state stats
     print(f"{state}: {env_dists[state].name:<30} {state_norm_log_rets.mean():>10.4f} {state_norm_log_rets.std():>10.4f}")
@@ -365,11 +358,6 @@ transition_matrices.shape
 ```
 
 ```python
-fig, ax = plt.subplots(figsize=(10,5))
-_ = ax.hist(transition_matrices[..., 0,0], bins=10, edgecolor="black")
-```
-
-```python
 np.median(transition_matrices, 0).round(2)
 ```
 
@@ -380,96 +368,203 @@ get_transition_probas(non_overlapping_envs, env_states).round(2)
 # Simulations
 
 ```python
-def get_next_state(state: int, transition_matrix: ndarray, rnd: np.random.RandomState = None) -> int:
+from typing import Dict
+
+def get_next_state(
+    state: int,
+    transition_matrix: ndarray,
+    rnd: np.random.RandomState = None
+) -> int:
+    """Given previous state and a NxN transition matrix, choose next state
+    
+    Parameters
+    ----------
+    state: int, range=[0, N)
+        Current state
+    transition_matrix: ndarray, shape=(N,N), range=(0., 1.)
+        NxN transition probability matrix: p(Next State | Current State)
+        Rows sum to 1.
+    rnd: np.random.RandomState, optional
+        (default = None)
+        
+    Returns
+    -------
+    next_state: int, range=[0, N]
+    """
+    if rnd is None:
+        rnd = np.random.RandomState()
+    
+    n_states = len(transition_matrix)
+    states = np.arange(n_states)
+    
+    conditional_transition_probas = transition_matrix[state]
+    
+    return rnd.choice(states, size=1, p=conditional_transition_probas)[0]
+
+
+def simulate_markov_chain(
+    n_steps: int,
+    transition_matrix: ndarray,
+    init_state: int = None,
+    rnd: np.random.RandomState = None
+) -> ndarray:
+    """Simulate sequential transition steps given a NxN transition matrix
+    
+    Parameters
+    ----------
+    n_steps: int
+        Number of simulation steps
+    transition_matrix: ndarray, shape=(N,N), range=(0., 1.)
+        NxN transition probability matrix: p(Next State | Current State)
+    init_state: int, optional
+        Initial state to seed simulation.
+    rnd: np.random.RandomState, optional
+        (default = None)
+        
+    Returns
+    -------
+    chain: ndarray, shape=(n_steps + 1,)
+        init_state + simulated sequence of states using transition_matrix.
+    """
     if rnd is None:
         rnd = np.random.RandomState()
         
-    p = transition_matrix[state]
-    return rnd.choice(np.arange(len(p)), size=1, p=p)[0]
-```
-
-```python
-n_sims = 10000
-n_steps = 30*4
-rnd = np.random.RandomState(1234)
-
-sim_states = []
-for _ in range(n_sims):
-    # sample a transition matrix
-    transition_matrix = transition_matrices[rnd.choice(np.arange(len(transition_matrices)))]
+    n_states = len(transition_matrix)
+    states = np.arange(n_states)
     
-    state = rnd.choice(np.arange(len(transition_matrix)), size=1)[0]
-    states = [state]
+    if init_state is None:
+        # Choose intial state
+        state = rnd.choice(states, size=1)[0]
+    else:
+        assert init_state in states
+        state = init_state
+        
+    chain = [state]
     for _ in range(n_steps):
         state = get_next_state(state, transition_matrix, rnd)
-        states.append(state)
-    sim_states.append(states)
-sim_states = np.array(sim_states)
-sim_states.shape
+        chain.append(state)
+        
+    return np.array(chain)
+
+
+def simulate_return_sequence(
+    n_windows: int,
+    window_size: int,
+    transition_matrix: ndarray,
+    env_dists: Dict[int, ContinuousDistribution],
+    ret_mean: float,
+    ret_std: float,
+    rnd: np.random.RandomState = None
+):
+    """
+    Parameters
+    ----------
+    n_windows: int
+        Number of non-overlapping windows to simulate.
+    window_size: int
+        Size of each windows in # of trading days.
+    transition_matrix: ndarray
+        NxN transition probability matrix: p(Next State | Current State)
+    env_dists: Dict[int, ContinuousDistribution]
+        Continuous distribution fit to the observed log normalized daily returns of each environment state.
+    ret_mean: float
+        Daily return mean to use for denormalization.
+    ret_std: float
+        Daily return std to use for denormalization.
+    rnd: np.random.RandomState = None
+    
+    Returns
+    -------
+    env_states: ndarray, shape=(n_windows + 1,)
+        Initial environment state + simulated sequence of states using transition_matrix.
+    sim_rets: ndarray, shape=(n_windows, window_size)
+        Sampled daily returns for each environment window in simulated sequence.
+    
+    """
+    if rnd is None:
+        rnd = np.random.RandomState()
+        
+    # Simulate environment states
+    env_states = simulate_markov_chain(n_windows, transition_matrix, rnd=rnd)
+    
+    # Sample log-nomralized daily returns for each environment
+    sim_rets = np.stack(
+        [
+            dist.sample(size=(n_windows, window_size)) 
+            for dist in env_dists.values()
+        ],
+        axis=-1
+    )
+    
+    # Index to the tranistioned environment for each step
+    sim_rets = np.take_along_axis(sim_rets, env_states[1:, None, None], axis=-1).squeeze(-1)
+    
+    # Denormalize returns
+    sim_rets = sim_rets * ret_std + ret_mean
+    
+    # Log rets -> real returns
+    sim_rets = np.exp(sim_rets) - 1
+    
+    return env_states, sim_rets
 ```
 
 ```python
-# Sample daily returns for each environment
-sim_rets = np.stack([dist.sample(size=(n_sims, n_steps, window_size)) for dist in env_dists.values()], axis=-1)
+# sample a transition matrix
+n_t_matrices = len(transition_matrices)
+t_matrices_idxs = np.arange(n_t_matrices)
+transition_matrix = transition_matrices[np.random.choice(t_matrices_idxs)]
 
-# Index to the tranistioned environment for each step
-sim_rets = np.take_along_axis(sim_rets, sim_states[:, 1:, None, None], axis=-1).squeeze(-1)
+# Sample ret, std
+ret_mean = np.random.choice(means, 1)[0]
+ret_std = np.random.choice(stds, 1)[0]
 
-# Reshape to daily ret sequences
-sim_rets = sim_rets.reshape(n_sims, n_steps * window_size)
-
-# Denormalize returns
-sim_rets = sim_rets * std_dist.sample((n_sims,1)) + mean_dist.sample((n_sims,1))
-
-
-sim_rets = np.exp(sim_rets) - 1
-# sim_rets.shape
-```
-
-```python
-fig, ax = plt.subplots(figsize=(10,5), sharex=True)
-_ = ax.hist(
-    sim_rets.sum(-1),
-    bins=30,
-    edgecolor="black",
+# Simulate returns
+env_states, sim_rets = simulate_return_sequence(
+    n_windows=30*4,  # 30 years of data
+    window_size=60,
+    transition_matrix=transition_matrix,
+    env_dists=env_dists,
+    ret_mean=ret_mean,
+    ret_std=ret_std
 )
+
+print(env_states.shape, sim_rets.shape)
+
+fig, ax = plt.subplots(figsize=(15,7))
+ax.plot(np.exp(np.cumsum(np.log(sim_rets.reshape(-1) + 1), axis=-1)))
 ```
 
 ```python
-fig, ax = plt.subplots(figsize=(15,7))
-ax.plot(np.exp(np.cumsum(np.log(sim_rets[8] + 1), axis=-1)))
+
 ```
 
 # Sizing optimization
 
 ```python
-exposures = np.random.ones(len(env_states))
+import torch
+import torch.nn as nn
+```
+
+```python
+exposures = nn.Parameter(
+    data = torch.exp(torch.randn(len(env_dists)))
+)
 exposures
 ```
 
 ```python
-def get_max_drawdown(returns: ndarray, axis: int = -1) -> ndarray:
-    equity_curves = np.exp(np.cumsum(np.log(returns + 1), axis=axis))
-    max_equities = np.maximum.accumulate(equity_curves, axis=axis)
-    drawdowns = equity_curves / max_equities - 1
-    return np.min(drawdowns, axis=axis), np.argmin(drawdowns, axis=axis)
+drawdown_threshold = -0.33
+scaled_returns = exposures[env_states[:-1], None] * torch.tensor(sim_rets, dtype=torch.float32)
+scaled_returns = scaled_returns.reshape(-1,)
+scaled_log_returns = torch.log(scaled_returns + 1)
+equity_curve = torch.cumsum(scaled_log_returns, -1)
+max_equities = torch.cummax(equity_curve, -1).values
+max_drawdown = torch.min(equity_curve - max_equities)
+loss = -(equity_curve[-1] + torch.clip(max_drawdown - np.log(1 + drawdown_threshold), max=0))
 ```
 
 ```python
-returns = exposures[sim_states[:,:-1]]*sim_rets
-```
-
-```python
-
-```
-
-```python
-get_max_drawdown(returns)
-```
-
-```python
-fig, ax = plt.subplots(figsize=(10,5), sharex=True)
-_ = ax.plot(np.exp(np.cumsum(np.log(returns[5] + 1), axis=-1)))
+equity_curve[-1]
 ```
 
 ```python
