@@ -16,6 +16,8 @@ jupyter:
 %load_ext autoreload
 %autoreload 2
 
+from typing import Dict, List
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
@@ -23,7 +25,7 @@ import pandas as pd
 import scipy.stats as stats
 
 from numpy import ndarray
-from quant_kit_core.distributions import get_best_fit_distribution
+from quant_kit_core.distributions import ContinuousDistribution, get_best_fit_distribution
 from quant_kit_core.time_series import (
     get_robust_trend_coef, 
     get_rolling_windows,
@@ -58,8 +60,22 @@ candidate_distributions = [
 df = pd.read_csv("../data/world-indices/$SPX.csv")
 ```
 
+# Time horizon constants
+
 ```python
-df
+trading_days_per_yr = 252
+
+# Environment context (window size in trading days)
+env_window_size = 60
+env_window_fr_yr = trading_days_per_yr / env_window_size
+med_vol_window_size = int(env_window_size * env_window_fr_yr * 10)
+
+# Sample duration
+n_sample_yrs = 30
+n_sample_windows = int(np.round(n_sample_yrs * env_window_fr_yr))
+n_sample_days = n_sample_windows * env_window_size
+
+print(f"# sample windows: {n_sample_windows:,}, n_sample_days: {n_sample_days:,}")
 ```
 
 # Rolling returns and vol
@@ -72,55 +88,67 @@ log_rets = np.log(prices[1:]/prices[:-1])
 ## Boostrapped sample staistics
 
 ```python
-n_boostraps = 1000
-samples = np.random.choice(log_rets, size=(n_boostraps, len(log_rets)), replace=True)
-means = samples.mean(axis=-1)
-stds = (samples**2).mean(axis=-1)**0.5
+n_boostraps = 10000
+samples = np.random.choice(log_rets, size=(n_boostraps, n_sample_days), replace=True)
+log_ret_means = samples.mean(axis=-1)
+log_ret_stds = (samples**2).mean(axis=-1)**0.5
 
 # Normalization stats
-mu, std = means.mean(), stds.mean()
+mu, std = log_ret_means.mean(), log_ret_stds.mean()
 norm_log_rets = (log_rets - mu) / std
-
-fig, axs = plt.subplots(ncols=2, figsize=(15,7))
-axs[0].hist(means*250, bins=30, edgecolor="black")
-axs[1].hist(stds*250**0.5, bins=30, edgecolor="black")
 ```
 
 ```python
-mean_dist = get_best_fit_distribution(
-    means,
+log_ret_mean_dist = get_best_fit_distribution(
+    log_ret_means,
     candidate_distributions=candidate_distributions,
     support=(-np.inf, np.inf),
     n_restarts=100,
     fit_time_limit=30,
 )[0]
 
-mean_dist
+print(log_ret_mean_dist.name)
+
+n_bins = 25
+fig, ax = plt.subplots(figsize=(20,7))
+counts, bins, patches = ax.hist(log_ret_means, bins=n_bins, density=True, edgecolor="black")
+x_ticks = [patch._x0 + patches[0]._width / 2 for patch in patches]
+x_ticklabels = [f"{r:.1%}" for r in np.array(x_ticks) * trading_days_per_yr]
+ax.set_xticks(x_ticks, x_ticklabels)
+ax.plot(bins, log_ret_mean_dist.pdf(bins), marker="o", color="black")
+_ = ax.set_title(f"Distribution of mean of daily log return")
 ```
 
 ```python
-std_dist = get_best_fit_distribution(
-    stds,
+log_ret_std_dist = get_best_fit_distribution(
+    log_ret_stds,
     candidate_distributions=candidate_distributions,
     support=(-np.inf, np.inf),
     n_restarts=100,
     fit_time_limit=30,
 )[0]
-std_dist
+
+print(log_ret_std_dist.name)
+
+n_bins = 25
+fig, ax = plt.subplots(figsize=(20,7))
+counts, bins, patches = ax.hist(log_ret_stds, bins=n_bins, density=True, edgecolor="black")
+x_ticks = [patch._x0 + patches[0]._width / 2 for patch in patches]
+x_ticklabels = [f"{r:.1%}" for r in np.array(x_ticks) * trading_days_per_yr**0.5]
+ax.set_xticks(x_ticks, x_ticklabels)
+ax.plot(bins, log_ret_std_dist.pdf(bins), marker="o", color="black")
+_ = ax.set_title(f"Distribution of std of daily log return")
 ```
 
 ## Rolling windows
 
 ```python
-window_size = 60
-med_vol_window_size = window_size * 4 * 10
-
-norm_log_ret_windows = get_rolling_windows(norm_log_rets, window_size)
+norm_log_ret_windows = get_rolling_windows(norm_log_rets, env_window_size)
 print(norm_log_ret_windows.shape)
 
 # Rolling stats
 rolling_stats = dict(
-    dates = df.Date.values[np.arange(window_size, len(df))],
+    dates = df.Date.values[np.arange(env_window_size, len(df))],
     avgs = norm_log_ret_windows.mean(-1),
     vols = np.mean(norm_log_ret_windows**2, axis=-1)**0.5,
     trends = np.apply_along_axis(get_robust_trend_coef, axis=-1, arr=norm_log_ret_windows),
@@ -158,8 +186,18 @@ axs[2].set_title("Rolling trends")
 
 # Environment segmentation
 
+
+## Summary windows
+
 ```python
-step_size = window_size * 4 * 15
+n_windows = len(norm_log_ret_windows)
+step_size = int(n_sample_days / 2)
+slice_bounds = [
+    (slice_center - step_size, slice_center + step_size)
+    for slice_center in np.arange(step_size, n_windows - step_size, step_size)
+]
+for i, (slice_st, slice_end ) in enumerate(slice_bounds):
+    print(f"""Slice {i:>2}: {rolling_stats["dates"][slice_st]} - {rolling_stats["dates"][slice_end]}""")
 ```
 
 ## Volatility environments
@@ -170,12 +208,12 @@ vol_states, vol_states_ct = np.unique(vol_flags, return_counts=True)
 state_freqs = vol_states_ct / vol_states_ct.sum()
 
 
-print([f"{s}:{f:>4.0%}" for s, f in zip(vol_states, state_freqs)])
-print("-"*20)
-for i in np.arange(0, len(vol_flags), step_size)[1:]:
-    _, vol_states_ct = np.unique(vol_flags[i-step_size:i], return_counts=True)
+print(f"All     :", [f"{s}:{f:>4.0%}" for s, f in zip(vol_states, state_freqs)])
+print("-"*30)
+for i, (slice_st, slice_end ) in enumerate(slice_bounds):
+    _, vol_states_ct = np.unique(vol_flags[slice_st : slice_end], return_counts=True)
     state_freqs = vol_states_ct / vol_states_ct.sum()
-    print([f"{s}:{f:>4.0%}" for s, f in zip(vol_states, state_freqs)])
+    print(f"Slice {i:>2}:", [f"{s}:{f:>4.0%}" for s, f in zip(vol_states, state_freqs)])
 ```
 
 ## Trend environments
@@ -185,12 +223,12 @@ trend_flags = np.digitize(rolling_stats["trends"], bins=[-1.0, -0.25, 0.25, 1.0]
 trend_states, trend_states_ct = np.unique(trend_flags, return_counts=True)
 state_freqs = trend_states_ct / trend_states_ct.sum()
 
-print([f"{s}:{f:>4.0%}" for s, f in zip(trend_states, state_freqs)])
-print("-"*30)
-for i in np.arange(0,len(trend_flags), step_size)[1:]:
-    _, trend_states_ct = np.unique(trend_flags[i-step_size:i], return_counts=True)
+print(f"All     :", [f"{s}:{f:>4.0%}" for s, f in zip(trend_states, state_freqs)])
+print("-"*40)
+for i, (slice_st, slice_end ) in enumerate(slice_bounds):
+    _, trend_states_ct = np.unique(trend_flags[slice_st : slice_end], return_counts=True)
     state_freqs = trend_states_ct / trend_states_ct.sum()
-    print([f"{s}:{f:>4.0%}" for s, f in zip(trend_states, state_freqs)])
+    print(f"Slice {i:>2}:", [f"{s}:{f:>4.0%}" for s, f in zip(trend_states, state_freqs)])
 ```
 
 ## Vol + Trend environments
@@ -207,28 +245,25 @@ for i in np.arange(0,len(trend_flags), step_size)[1:]:
 ```python
 env_states_shape = (len(vol_states), len(trend_states))
 env_states = np.arange(np.prod(env_states_shape)).reshape(env_states_shape)
+print(env_states)
 
 env_flags = env_states[vol_flags, trend_flags]
-print(env_flags.shape)
 
 env_states, env_states_ct = np.unique(env_flags, return_counts=True)
 state_freqs = env_states_ct / env_states_ct.sum()
 
-print([f"{s}:{f:>4.0%}" for s, f in zip(env_states, state_freqs)])
-print("-"*60)
-for i in np.arange(0,len(env_flags), step_size)[1:]:
-    _, env_states_ct = np.unique(env_flags[i-step_size:i], return_counts=True)
+print(f"All     :", [f"{s}:{f:>4.0%}" for s, f in zip(env_states, state_freqs)])
+print("-"*70)
+for i, (slice_st, slice_end) in enumerate(slice_bounds):
+    _, env_states_ct = np.unique(env_flags[slice_st : slice_end], return_counts=True)
     state_freqs = env_states_ct / env_states_ct.sum()
-    print([f"{s}:{f:>4.0%}" for s, f in zip(env_states, state_freqs)])
+    print(f"Slice {i:>2}:", [f"{s}:{f:>4.0%}" for s, f in zip(env_states, state_freqs)])
 ```
 
 ## Fit distribution to each env
 
 ```python
-from quant_kit_core.distributions import ContinuousDistribution
-```
-
-```python
+env_means = []
 env_dists = dict()
 
 fig, axs = plt.subplots(
@@ -236,7 +271,6 @@ fig, axs = plt.subplots(
     figsize=(10,5*env_states.size), 
     sharex=True,
 )
-
 
 bins = np.linspace(*np.quantile(norm_log_rets, q=[0, 1]), 100)
 for ax, state in zip(axs, env_states.flatten()):
@@ -248,11 +282,15 @@ for ax, state in zip(axs, env_states.flatten()):
     env_dists[state] = dist
     
     # Print state stats
-    print(f"{state}: {env_dists[state].name:<30} {state_norm_log_rets.mean():>10.4f} {state_norm_log_rets.std():>10.4f}")
+    env_mean = state_norm_log_rets.mean()
+    env_means.append(env_mean)
+    print(f"{state}: {env_dists[state].name:<30} {env_mean:>10.4f} {state_norm_log_rets.std():>10.4f}")
     
     _, bins, _ = ax.hist(state_norm_log_rets, bins=bins, density=True, edgecolor="black")
     ax.plot(bins, env_dists[state].pdf(bins), color="black")
     ax.set_title(f"{state}")
+    
+env_means = np.array(env_means)
 ```
 
 # Transition matrix
@@ -277,15 +315,18 @@ transition_states
 ## Sequences of non-overlapping environments
 
 ```python
-n = len(env_flags)
-n_remainder = n % window_size
+n_remainder = n_windows % env_window_size
 start = n_remainder // 2
-stop = n - (n_remainder - start)
-n_splits = (stop - start) // window_size
+stop = n_windows - (n_remainder - start)
+n_splits = (stop - start) // env_window_size
 non_overlapping_idxs = np.arange(start, stop)
 non_overlapping_idxs = np.array(np.split(non_overlapping_idxs, n_splits))
 non_overlapping_envs = env_flags[non_overlapping_idxs]
 non_overlapping_envs.shape
+```
+
+```python
+non_overlapping_envs[:10, :5]
 ```
 
 ## Rolling samplining windows to estimate transition matrix
@@ -343,9 +384,8 @@ def get_transition_probas(
 ```
 
 ```python
-sampling_window_size = int(250 /window_size * 10)
-
-rws = get_rolling_windows(non_overlapping_envs, window_size=sampling_window_size)
+# Calculate transition probabilities for every rolling window of length = n_sample_windows
+rws = get_rolling_windows(non_overlapping_envs, window_size=n_sample_windows)
 
 transition_matrices = np.apply_along_axis(
     lambda x, *args: get_transition_probas(x.reshape(rws.shape[1:]), env_states),
@@ -358,18 +398,28 @@ transition_matrices.shape
 ```
 
 ```python
-np.median(transition_matrices, 0).round(2)
+
 ```
 
 ```python
-get_transition_probas(non_overlapping_envs, env_states).round(2)
+t_med = np.median(transition_matrices, 0).round(2)
+print("Transition Probabilities")
+print(t_med)
+print("\nAnnual expected return conditioned on each environment prior")
+print(np.exp(((t_med @ env_means[:, None]) * std + mu)* trading_days_per_yr) - 1)
+```
+
+```python
+t_all = get_transition_probas(non_overlapping_envs, env_states).round(2)
+print(t_all)
+print()
+print("\nAnnual expected return conditioned on each environment prior")
+print(np.exp(((t_all @ env_means[:, None]) * std + mu)* trading_days_per_yr) - 1)
 ```
 
 # Simulations
 
 ```python
-from typing import Dict
-
 def get_next_state(
     state: int,
     transition_matrix: ndarray,
@@ -487,7 +537,7 @@ def simulate_return_sequence(
     # Simulate environment states
     env_states = simulate_markov_chain(n_windows, transition_matrix, rnd=rnd)
     
-    # Sample log-nomralized daily returns for each environment
+    # Sample log-normalized daily returns for each environment
     sim_rets = np.stack(
         [
             dist.sample(size=(n_windows, window_size)) 
@@ -513,15 +563,20 @@ def simulate_return_sequence(
 n_t_matrices = len(transition_matrices)
 t_matrices_idxs = np.arange(n_t_matrices)
 transition_matrix = transition_matrices[np.random.choice(t_matrices_idxs)]
+print(transition_matrix.round(2))
 
 # Sample ret, std
-ret_mean = np.random.choice(means, 1)[0]
-ret_std = np.random.choice(stds, 1)[0]
+ret_mean = log_ret_mean_dist.sample(1)[0]
+ret_std = log_ret_std_dist.sample(1)[0]
+print(f"\n{np.exp(ret_mean * trading_days_per_yr) - 1:.2%}, {ret_std * trading_days_per_yr**0.5:.2%}")
+
+print("\nAnnual expected return conditioned on each environment prior")
+print(np.exp(((transition_matrix @ env_means[:, None]) * ret_std + ret_mean)* trading_days_per_yr) - 1)
 
 # Simulate returns
 env_states, sim_rets = simulate_return_sequence(
-    n_windows=30*4,  # 30 years of data
-    window_size=60,
+    n_windows=n_sample_windows,  # 30 years of data
+    window_size=env_window_size,
     transition_matrix=transition_matrix,
     env_dists=env_dists,
     ret_mean=ret_mean,
@@ -534,37 +589,171 @@ fig, ax = plt.subplots(figsize=(15,7))
 ax.plot(np.exp(np.cumsum(np.log(sim_rets.reshape(-1) + 1), axis=-1)))
 ```
 
-```python
-
-```
-
 # Sizing optimization
 
 ```python
 import torch
 import torch.nn as nn
+from numpy.typing import ArrayLike
+from torch import Tensor
+from torch.optim import Adam
+
+
 ```
 
 ```python
-exposures = nn.Parameter(
-    data = torch.exp(torch.randn(len(env_dists)))
-)
-exposures
+class ConditionalExposureModel(nn.Module):
+    def __init__(self, n_env_states: int):
+        super().__init__()
+        
+        self.n_env_states = n_env_states
+        self.exposures = nn.Parameter(
+            data = torch.randn(n_env_states) / 1000
+        )
+        
+    def get_scaled_log_returns(
+        self, environment_states: ArrayLike, simulated_returns: ArrayLike
+    ) -> Tensor:
+        """Apply exposure model weights to a simulated sequence of environments & returns
+        
+        scaled_ret[i] = exposures[env[i - 1]] * ret[i]
+        
+        Parameters
+        ----------
+        environment_states: ArrayLike, shape=(n_windows + 1,)
+            Initial environment state + simulated sequence of states using transition_matrix.
+        simulated_returns: ArrayLike, shape=(n_windows, window_size)
+            Sampled daily returns for each environment window in simulated sequence.
+            
+        Returns
+        -------
+        scaled_log_returns: Tensor, shape=(n_windows * window_size, )
+        """
+        # Cast returns as a tensor and move to model's device
+        simulated_returns = torch.tensor(simulated_returns).to(self.exposures)
+        
+        # Apply exposure for previous window's environment to current window's returns
+        exposures = torch.exp(self.exposures)
+        scaled_returns = exposures[env_states[:-1], None] * simulated_returns
+        
+        # Unravel daily returns for each window
+        scaled_returns = scaled_returns.reshape(-1,)
+        
+        # Real returns -> log returns
+        scaled_log_returns = torch.log(scaled_returns + 1)
+        
+        return scaled_log_returns
+    
+    def get_exposures(self) -> List[float]:
+        """Returns exposures as """
+        exposures = torch.exp(self.exposures.data.detach().cpu())
+        return exposures.tolist()
 ```
 
 ```python
+def get_exposure_loss(
+    scaled_log_returns: Tensor, 
+    drawdown_threshold: float,
+    drawdown_mult: float = 3.0
+) -> Tensor:
+    """
+    """
+    
+    equity_curve = torch.cumsum(scaled_log_returns, -1)
+    
+    final_equity = equity_curve[-1]
+    
+    max_equities = torch.cummax(equity_curve, -1).values
+    max_drawdown = torch.min(equity_curve - max_equities)
+    
+    excess_drawdown = torch.clip(max_drawdown - np.log(1 + drawdown_threshold), max=0)
+    excess_drawdown_penalty = excess_drawdown * drawdown_mult
+    
+    loss = -(final_equity + excess_drawdown_penalty)
+    
+    return loss
+```
+
+```python
+exp_model = ConditionalExposureModel(n_env_states=len(env_dists))
+optimizer = Adam(params=exp_model.parameters(), lr=5e-4)
+
 drawdown_threshold = -0.33
-scaled_returns = exposures[env_states[:-1], None] * torch.tensor(sim_rets, dtype=torch.float32)
-scaled_returns = scaled_returns.reshape(-1,)
-scaled_log_returns = torch.log(scaled_returns + 1)
-equity_curve = torch.cumsum(scaled_log_returns, -1)
-max_equities = torch.cummax(equity_curve, -1).values
-max_drawdown = torch.min(equity_curve - max_equities)
-loss = -(equity_curve[-1] + torch.clip(max_drawdown - np.log(1 + drawdown_threshold), max=0))
+n_opt_steps = 20000
+
+# Sample transition matrix, return mean, and ret dev for each step
+t_matrices_idxs = np.random.choice(np.arange(len(transition_matrices)), size=(n_opt_steps,))
+ret_means = log_ret_mean_dist.sample(n_opt_steps)
+ret_stds = log_ret_std_dist.sample(n_opt_steps)
+
+exposures = [exp_model.get_exposures()]
+for t_idx, ret_mean, ret_std in zip(t_matrices_idxs, ret_means, ret_stds):
+
+    # Simulate returns
+    env_states, sim_rets = simulate_return_sequence(
+        n_windows=n_sample_windows,
+        window_size=env_window_size,
+        transition_matrix=transition_matrices[t_idx],
+        env_dists=env_dists,
+        ret_mean=ret_mean,
+        ret_std=ret_std
+    )
+    
+    # Apply exposures to simulation
+    scaled_log_returns = exp_model.get_scaled_log_returns(env_states, sim_rets)
+    
+    # Calculate loss from exposures
+    loss = get_exposure_loss(scaled_log_returns, drawdown_threshold)
+    
+    # Update exposure model
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+    
+    # Save weights
+    exposures.append(exp_model.get_exposures())
+    
+exposures = np.array(exposures)
+print([f"{e:>4.1%}" for e in exposures[-1]])
+fix, ax = plt.subplots(figsize=(15,7))
+
+for i in env_dists.keys():
+    ax.plot(exposures[:, i], label=i)
+ax.legend()
 ```
 
 ```python
-equity_curve[-1]
+# sample a transition matrix
+n_t_matrices = len(transition_matrices)
+t_matrices_idxs = np.arange(n_t_matrices)
+transition_matrix = transition_matrices[np.random.choice(t_matrices_idxs)]
+print(transition_matrix.round(2))
+
+# Sample ret, std
+ret_mean = log_ret_mean_dist.sample(1)[0]
+ret_std = log_ret_std_dist.sample(1)[0]
+print(f"\n{np.exp(ret_mean * trading_days_per_yr) - 1:.2%}, {ret_std * trading_days_per_yr**0.5:.2%}")
+
+print("\nAnnual expected return conditioned on each environment prior")
+print(np.exp(((transition_matrix @ env_means[:, None]) * ret_std + ret_mean)* trading_days_per_yr) - 1)
+
+# Simulate returns
+env_states, sim_rets = simulate_return_sequence(
+    n_windows=n_sample_windows,  # 30 years of data
+    window_size=env_window_size,
+    transition_matrix=transition_matrix,
+    env_dists=env_dists,
+    ret_mean=ret_mean,
+    ret_std=ret_std
+)
+
+# Apply exposures to simulation
+with torch.no_grad():
+    scaled_log_returns = exp_model.get_scaled_log_returns(env_states, sim_rets)
+
+fig, ax = plt.subplots(figsize=(15,7))
+ax.plot(np.exp(np.cumsum(np.log(sim_rets.reshape(-1) + 1), axis=-1)), color="black", label="always invested")
+ax.plot(np.exp(np.cumsum(scaled_log_returns, axis=-1)), color="orange", label="dynamic exposures")
 ```
 
 ```python
