@@ -26,6 +26,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
+from scipy.signal import find_peaks, peak_prominences
 
 from quant_kit_core.time_series import get_rolling_windows
 
@@ -48,26 +49,67 @@ seq2 = np.random.randint(low=-10, high=11, size=n)
 
 ```python
 from numpy.typing import NDArray
-def calc_min_edit_distance(arr1: NDArray, arr2: NDArray, sample_frac: float = 1) -> float:
+
+def nomralize(arr: NDArray[np.float_]) -> NDArray[np.float_]:
+    return (arr - arr.mean()) / np.mean(arr**2)**0.5
+
+
+def get_peak_idxs(
+    arr: NDArray[np.float_],
+    distance: int | None = None,
+    prominence: float | None = None,
+) -> NDArray[np.int_]:
+    
+    p_peak_idxs, _ = find_peaks(
+        arr,
+        distance=distance,
+        prominence=prominence,
+    )
+    n_peak_idxs, _ = find_peaks(
+        -arr,
+        distance=distance,
+        prominence=prominence,
+    )
+    peak_idxs = np.sort(np.concatenate((p_peak_idxs, n_peak_idxs)))
+    
+    return peak_idxs
+    
+    
+def calc_min_edit_distance(
+    returns_a: NDArray,
+    returns_b: NDArray,
+    distance: int = 5,
+    prominence: float = 2,
+    transport_threshold = 0.1
+) -> float:
     """
     """
-    n = len(arr1)
-    idxs = np.arange(n)
-    if sample_frac < 1:
-        idxs = np.random.choice(idxs, int(n*sample_frac), replace=False)
+    n1 = len(returns_a)
+    n2 = len(returns_b)
     
-    value_cost = (arr1[idxs, None] - arr2[None, idxs])**2
+    scaled_a = returns_a / np.mean(returns_a**2)**0.5
+    scaled_b = returns_b / np.mean(returns_b**2)**0.5
     
+    peak_idxs_a = get_peak_idxs(
+        (scaled_a - scaled_a.mean()).cumsum(), distance, prominence
+    )
+    peak_idxs_b = get_peak_idxs(
+        (scaled_b - scaled_b.mean()).cumsum(), distance, prominence
+    )
     
-    transport_cost = np.abs(idxs[:, None] - idxs[None, :])**0.5
+    seq_a = scaled_a.cumsum()
+    seq_b = scaled_b.cumsum()
+    value_cost = (seq_a[peak_idxs_a, None] - seq_b[None, peak_idxs_b])**2
+    
+    transport_cost = ((peak_idxs_a[:, None] / n1 - peak_idxs_b[None, :] / n2) / transport_threshold)**2
     
     total_cost = value_cost + transport_cost
     
     # Minimum cost
     row_idxs, col_idxs = linear_sum_assignment(total_cost)
-    min_cost = total_cost[row_idxs, col_idxs].sum()
+    min_cost = total_cost[row_idxs, col_idxs].mean()
     
-    return (min_cost / sample_frac) / n
+    return min_cost / total_cost.mean()
 ```
 
 # Load Data
@@ -82,15 +124,11 @@ prices = data.Close.values
 returns = np.log(prices[1:] / prices[:-1])
 ```
 
-```python
-norm_returns = (returns - returns.mean()) / np.mean(returns**2)**0.5
-```
-
 # Rolling returns
 
 ```python
 rolling_returns = get_rolling_windows(
-    norm_returns,
+    returns,
     window_size=252*5
 )
 rolling_returns.shape
@@ -100,15 +138,29 @@ rolling_returns.shape
 s1 = np.random.randint(low=0, high=23474)
 s2 = np.random.randint(low=0, high=23474)
 
-seq1 = rolling_returns[s1]
-seq2 = rolling_returns[s2]
+r1 = rolling_returns[s1]
+r2 = rolling_returns[s2]
 fig, ax = plt.subplots(figsize=(15,5))
-ax.plot(seq1.cumsum())
-ax.plot(seq2.cumsum())
+ax.plot(r1.cumsum())
+ax.plot(r2.cumsum())
 ```
 
 ```python
-calc_min_edit_distance(seq1, seq2, sample_frac=1)
+calc_min_edit_distance(r1, r2, distance=5, prominence=2)
+```
+
+```python
+x = nomralize(r2)
+fig, ax = plt.subplots(figsize=(15,5))
+ax.plot(x.cumsum())
+```
+
+```python
+seq_a = nomralize(r1).cumsum()
+seq_b = nomralize(r2).cumsum()
+fig, ax = plt.subplots(figsize=(15,5))
+ax.plot(seq_a.cumsum())
+ax.plot(seq_b.cumsum())
 ```
 
 ```python
